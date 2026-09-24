@@ -1,0 +1,93 @@
+{
+  "$defs": {
+    "OcrLine": {
+      "properties": {
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "confidence": {
+          "description": "Skor pengenalan baris dari engine, apa adanya.",
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "bbox": {
+          "description": "[x0, y0, x1, y1] dalam piksel PNG yang dikirim (lihat README: rotation_applied).",
+          "items": {
+            "type": "integer"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "title": "Bbox",
+          "type": "array"
+        }
+      },
+      "required": [
+        "text",
+        "confidence",
+        "bbox"
+      ],
+      "title": "OcrLine",
+      "type": "object"
+    }
+  },
+  "description": "Respons 200. Hasil kosong (`text=\"\"`, `lines=[]`) adalah hasil sah, bukan error.",
+  "properties": {
+    "request_id": {
+      "title": "Request Id",
+      "type": "string"
+    },
+    "engine": {
+      "description": "Selalu 'paddleocr' (item 15).",
+      "title": "Engine",
+      "type": "string"
+    },
+    "engine_version": {
+      "description": "paddleocr.__version__; dicatat M2 di `versions`.",
+      "title": "Engine Version",
+      "type": "string"
+    },
+    "text": {
+      "description": "Baris digabung dengan '\\n' sesuai urutan baca engine.",
+      "title": "Text",
+      "type": "string"
+    },
+    "lines": {
+      "items": {
+        "$ref": "#/$defs/OcrLine"
+      },
+      "title": "Lines",
+      "type": "array"
+    },
+    "rotation_applied": {
+      "description": "Rotasi halaman (derajat) yang diterapkan engine sebelum deteksi; 0 bila tidak ada.",
+      "enum": [
+        0,
+        90,
+        180,
+        270
+      ],
+      "title": "Rotation Applied",
+      "type": "integer"
+    },
+    "timing_ms": {
+      "description": "Durasi inference di engine (tanpa waktu antre).",
+      "minimum": 0,
+      "title": "Timing Ms",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "request_id",
+    "engine",
+    "engine_version",
+    "text",
+    "lines",
+    "rotation_applied",
+    "timing_ms"
+  ],
+  "title": "OcrResponse",
+  "type": "object"
+}

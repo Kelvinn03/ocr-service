@@ -1,0 +1,180 @@
+# ocr-service di Kubernetes -- bagian yang memegang GPU. Port dari k8s/ocr.yaml existing TERMASUK
+# perubahan yang belum di-commit di repo existing (pool 2 → 6, memory limit 6Gi → 8Gi, catatan GPU).
+#
+# Nama Deployment/Service `ocr-service`, port 8002: itulah yang dipakai M2 worker
+# (deploy/k8s/worker.yaml di backend: OCR_SERVICE_URL=http://ocr-service:8002). Existing: `bkpm-ocr`.
+#
+# Namespace tidak dideklarasikan; `kubectl apply -n <ns>` yang menentukan.
+#
+#   kubectl apply -n <ns> -f k8s/ocr.yaml
+#   kubectl -n <ns> rollout status deploy/ocr-service
+#   kubectl -n <ns> port-forward svc/ocr-service 8002:8002   # lalu curl /healthz dan /readyz
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ocr-service
+  labels:
+    app: ocr-service
+spec:
+  # SATU, dan tidak bisa sembarangan jadi dua. Tiap replika butuh satu nvidia.com/gpu utuh -- resource
+  # integer, tanpa alokasi pecahan kecuali time-slicing/MPS di device plugin. Dua replika = dua kartu.
+  replicas: 1
+
+  # Recreate, BUKAN RollingUpdate default. Rolling update menyalakan pod baru SEBELUM pod lama mati,
+  # sehingga meminta GPU kedua yang tidak ada, pod baru Pending selamanya dan rollout menggantung.
+  # Harganya jeda tanpa OCR saat swap: M2 menganggap 503/koneksi putus sebagai sementara dan mencoba
+  # ulang (per halaman, lalu tiket kembali ke antrian dengan jeda).
+  strategy:
+    type: Recreate
+
+  selector:
+    matchLabels:
+      app: ocr-service
+
+  template:
+    metadata:
+      labels:
+        app: ocr-service
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+
+      # A10, sesuai instruksi tim infra: OCR di A10, vLLM di L20. Nilai label dikonfirmasi 2026-09-22
+      # (`kubectl get nodes -L gpu-type`; `-o wide` TIDAK menampilkan label).
+      #
+      # Node ini adalah CONTROL PLANE k3s (2 A10, 32 CPU, ~123GiB), tanpa taint. Karena itu memory limit
+      # di bawah wajib: membuat node ini kehabisan memori tidak hanya menjatuhkan OCR, tetapi juga
+      # apiserver dan etcd.
+      #
+      # CEK KARTU BENAR-BENAR KOSONG SEBELUM APPLY, karena cluster ini sudah menunjukkan bahwa
+      # pembukuan scheduler bisa salah. Pada 2026-09-22 vllm-qwen3-8b berjalan di node ini memegang
+      # satu A10 di 18.6GiB dari 23GiB sementara `kubectl describe node` melaporkan NOL GPU diminta --
+      # ia tidak pernah mendeklarasikan nvidia.com/gpu, dan di k3s dengan runtime NVIDIA sebagai
+      # default container mendapat kartu tanpa meminta. Pod yang percaya laporan itu bisa diberi kartu
+      # qwen, dengan sisa ~4.4GiB, padahal pool enam engine butuh ~16GiB.
+      #
+      # Belakangan di hari yang sama node melaporkan 1 dari 2 teralokasi, seperti seharusnya. Percayai
+      # hanya setelah melihat kartunya:
+      #   nvidia-smi                                   # di node itu sendiri
+      #   kubectl describe node -l gpu-type=a10 | grep -A10 "Allocated"
+      # Keduanya harus sama. Bila berbeda, kartu yang benar.
+      #
+      # l20 BUKAN jalan keluar seperti sebelumnya: kedua kartunya sudah teralokasi, untuk
+      # vllm-gemma4-12b-qat dan untuk OCR service milik tim lain (lihat item 14 di guide).
+      nodeSelector:
+        gpu-type: a10
+
+      # 60s, bukan default 30s, agar halaman yang sedang diproses sempat selesai saat rollout.
+      terminationGracePeriodSeconds: 60
+
+      containers:
+        - name: ocr
+          # TODO: registry/org final belum ditetapkan (item 14: kepemilikan repo). Pakai tag sha
+          # (immutable) + IfNotPresent: :latest + Always membuat reschedule node diam-diam men-deploy
+          # build terbaru, dan menarik ulang image ~6GB setiap kali.
+          image: ghcr.io/CHANGE-ME/ocr-service:CHANGE-ME-SHA
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: http
+              containerPort: 8002
+
+          env:
+            # Enam, sesuai hasil pengukuran di instance dev. Konkurensi pool ada DI DALAM satu proses
+            # (instance PaddleOCR independen berbagi satu CUDA context), karena itu skalanya lewat
+            # ukuran pool, bukan replika atau uvicorn worker.
+            #
+            # Dua adalah jawaban lama, dan benar hanya selama vLLM berbagi kartu. Dengan kartu sendiri,
+            # scan 11 halaman yang sama terukur 11.74s pada pool 2, 8.43s pada 4, dan 7.35s pada 6. Enam
+            # engine kira-kira 16GiB dari 23GiB A10 (estimasi; item 21 -- ukur ulang dengan nvidia-smi).
+            #
+            # Bila meninjau ulang, ukur ocr_wall_seconds, JANGAN kolom S/HAL bench: S/HAL adalah latensi
+            # rata-rata per halaman, yang NAIK seiring konkurensi, dan membacanya sebagai throughput
+            # membalik kesimpulan.
+            #
+            # M2 membatasi halaman bersamaan per dokumen (OCR_PAGE_CONCURRENCY) di bawah angka ini agar
+            # satu dokumen besar tidak memakai semua engine (item 23).
+            - name: OCR_ENGINE_POOL_SIZE
+              value: "6"
+            # Lewat dari ini request dijawab 503 + Retry-After (M2 mencoba ulang 2/4/8s). Existing
+            # menunggu tanpa batas (sampai timeout client 300s). Tuning: item 24.
+            - name: OCR_ACQUIRE_TIMEOUT_S
+              value: "30"
+            # Eksplisit (item 24): mati agar bbox mengacu ke PNG yang dikirim. Existing kemungkinan
+            # menyala (default PaddleOCR). Verifikasi di sampel asli sebelum mengubah.
+            - name: OCR_USE_DOC_ORIENTATION_CLASSIFY
+              value: "false"
+            - name: OCR_USE_DOC_UNWARPING
+              value: "false"
+            - name: OCR_USE_TEXTLINE_ORIENTATION
+              value: "true"
+
+          resources:
+            limits:
+              # Inti pod ini. Tanpa ini container tetap jalan dan diam-diam memakai CPU dengan satu engine
+              # -- 15.5x lebih lambat per halaman (terukur), tanpa error. `/readyz` field `device` yang
+              # memperlihatkannya.
+              #
+              # Untuk extended resource, Kubernetes otomatis menyamakan requests dengan limits.
+              nvidia.com/gpu: 1
+              # Memori HOST, bukan VRAM. Angka lain di repo existing (169MB bobot, 2731MB puncak transient
+              # per engine) adalah VRAM.
+              #
+              # RSS host terukur di instance dev 2026-09-22 dengan pool DUA terbangun dan satu dokumen
+              # diproses: 1.18GiB, nyaris idle (CPU 0.04%). Pool di sini ENAM, jadi angka sebenarnya lebih
+              # tinggi dan batas ini ESTIMASI, BUKAN PENGUKURAN -- baca ulang dengan `docker stats` di
+              # instance, atau `kubectl top pod` setelah ini berjalan, lalu koreksi.
+              memory: 8Gi
+            requests:
+              memory: 2Gi
+              cpu: "1"
+
+          # Tiga probe dengan tugas berbeda. Aman di-probe karena inference berjalan di threadpool: event
+          # loop tetap bebas selama halaman diproses, jadi probe dijawab, bukan antre di belakang dokumen.
+          # Tidak ada probe yang membangun pool; pool dibangun sekali di startup (thread latar).
+
+          # Startup: import paddle + init CUDA + membangun enam engine jauh lebih lama dari melayani.
+          # 5s x 60 = lima menit sebelum menyerah; selama itu dua probe lain ditahan.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
+
+          # Readiness = semua engine siap (existing memakai /healthz yang tidak menjamin pool terbangun).
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+
+          # Liveness = proses hidup; /healthz 503 hanya bila pool GAGAL dibangun (mis. VRAM tidak muat),
+          # sehingga pod di-restart dan kegagalannya terlihat sebagai CrashLoop.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ocr-service
+  labels:
+    app: ocr-service
+spec:
+  # ClusterIP: hanya dari dalam cluster. Service ini TIDAK punya autentikasi -- ia meng-OCR byte apa
+  # pun yang diberikan -- jadi tidak boleh punya Ingress atau NodePort. Pemanggil lintas namespace
+  # memakai ocr-service.<ns>.svc.cluster.local dan butuh NetworkPolicy atau token (item 14).
+  type: ClusterIP
+  selector:
+    app: ocr-service
+  ports:
+    - name: http
+      port: 8002
+      targetPort: http

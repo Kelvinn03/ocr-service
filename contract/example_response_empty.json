@@ -1,0 +1,9 @@
+{
+  "request_id": "job_0000example:page-2",
+  "engine": "paddleocr",
+  "engine_version": "3.7.0",
+  "text": "",
+  "lines": [],
+  "rotation_applied": 0,
+  "timing_ms": 310
+}

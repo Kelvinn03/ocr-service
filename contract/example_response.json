@@ -1,0 +1,30 @@
+{
+  "request_id": "job_0000example:page-2",
+  "engine": "paddleocr",
+  "engine_version": "3.7.0",
+  "text": "SERTIFIKAT HAK GUNA BANGUNAN\nNomor: 00.00.00.00.0.00000",
+  "lines": [
+    {
+      "text": "SERTIFIKAT HAK GUNA BANGUNAN",
+      "confidence": 0.97,
+      "bbox": [
+        112,
+        80,
+        890,
+        132
+      ]
+    },
+    {
+      "text": "Nomor: 00.00.00.00.0.00000",
+      "confidence": 0.58,
+      "bbox": [
+        112,
+        150,
+        540,
+        188
+      ]
+    }
+  ],
+  "rotation_applied": 0,
+  "timing_ms": 840
+}

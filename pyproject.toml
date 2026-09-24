@@ -1,0 +1,57 @@
+[project]
+name = "ocr-service"
+version = "0.1.0"
+description = "OCR service shared (PaddleOCR di GPU): POST /v1/ocr mengembalikan teks, baris, confidence, bbox"
+requires-python = ">=3.12,<3.13"
+# Core: cukup untuk import, contract export, dan test (FakeEngine). Paddle hanya lewat extra.
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "pydantic>=2.8",
+  "pydantic-settings>=2.4",
+  "python-multipart>=0.0.9",
+  "pillow>=10.4",
+  "numpy>=1.26,<2.4", # paddlex mematok numpy<2.4
+]
+
+[project.optional-dependencies]
+# Mesin OCR. Versi dipin karena `engine_version` masuk `versions` di M2 dan parser mengikuti 3.x.
+paddle = ["paddleocr==3.7.0"]
+# Dev/CI tanpa GPU (termasuk Linux x86 tanpa CUDA). Tidak ada wheel untuk macOS arm64 di sebagian versi.
+cpu = ["paddleocr==3.7.0", "paddlepaddle==3.3.1"]
+# GPU: paddlepaddle-gpu TIDAK bisa dinyatakan di sini karena butuh --index-url Paddle (cu130);
+# pasang dengan `pip install -r requirements-gpu.txt` di pip run terpisah (lihat Dockerfile).
+gpu = ["paddleocr==3.7.0"]
+dev = [
+  "pytest>=8.2",
+  "httpx>=0.27",
+  "ruff>=0.6",
+]
+
+[project.scripts]
+ocr-service-export-contract = "ocr_service.export_contract:main"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "paddle: butuh paddleocr + paddlepaddle terpasang (di-skip bila tidak ada)",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["ocr_service"]

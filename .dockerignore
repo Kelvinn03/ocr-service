@@ -1,0 +1,13 @@
+# Image hanya butuh pyproject.toml, requirements-gpu.txt dan src/.
+.venv/
+**/__pycache__/
+*.pyc
+*.egg-info/
+build/
+.pytest_cache/
+.ruff_cache/
+.env
+tests/
+contract/
+k8s/
+*.md

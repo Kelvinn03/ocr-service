@@ -1,0 +1,42 @@
+{
+  "description": "Body semua respons non-2xx. Tidak pernah memuat isi teks OCR maupun isi gambar.",
+  "properties": {
+    "request_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Di-echo bila metadata sudah terbaca.",
+      "title": "Request Id"
+    },
+    "error_code": {
+      "enum": [
+        "bad_request",
+        "invalid_metadata",
+        "invalid_image",
+        "image_too_large",
+        "unsupported_media_type",
+        "busy",
+        "not_ready",
+        "engine_error"
+      ],
+      "title": "Error Code",
+      "type": "string"
+    },
+    "message": {
+      "title": "Message",
+      "type": "string"
+    }
+  },
+  "required": [
+    "request_id",
+    "error_code",
+    "message"
+  ],
+  "title": "OcrErrorResponse",
+  "type": "object"
+}

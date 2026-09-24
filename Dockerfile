@@ -1,0 +1,109 @@
+# syntax=docker/dockerfile:1
+#
+# ocr-service: PaddleOCR di GPU di balik POST /v1/ocr. Port dari Dockerfile.ocr existing.
+# Context build = folder ini saja (tidak ada file di luar ocr-service/).
+#
+#   docker build --build-arg GIT_SHA=$(git rev-parse --short HEAD) -t ocr-service .
+#   docker run --gpus all -p 8002:8002 ocr-service
+#
+# Beda dari existing: hanya pyproject.toml + src/ yang di-copy (existing `COPY . .` membawa seluruh
+# repo karena config.py dan contract test satu pohon); image ini tidak butuh itu lagi.
+
+# Harus cocok dengan driver NVIDIA host DAN index CUDA di requirements-gpu.txt (cu130). Varian cudnn
+# wajib: model deteksi & rekognisi PaddleOCR berjalan lewat cuDNN, image -runtime biasa tidak membawanya.
+ARG CUDA_IMAGE=nvidia/cuda:13.0.3-cudnn-runtime-ubuntu24.04
+
+
+# =============================================================================
+# Stage 1 -- bobot model PaddleOCR, di-fetch dengan wheel CPU.
+#
+# paddlepaddle-gpu tidak bisa di-IMPORT tanpa libcuda.so.1, yang disuntikkan NVIDIA Container Toolkit
+# saat RUN, bukan bagian image; mesin build tidak punya GPU. Wheel CPU tidak me-link CUDA, jadi bisa
+# di-import di sini, dan bobot yang di-download adalah file biasa yang sama (model inference; device
+# hanya menentukan tempat jalan). Hanya direktori cache yang dibawa ke stage berikutnya.
+# =============================================================================
+FROM ${CUDA_IMAGE} AS ocr-models
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    HOME=/root \
+    PATH=/opt/venv/bin:$PATH
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 python3-venv libgl1 libglib2.0-0t64 libgomp1 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python3 -m venv /opt/venv && pip install --no-cache-dir --upgrade pip
+
+WORKDIR /warmup
+COPY pyproject.toml ./
+RUN mkdir -p src/ocr_service && touch src/ocr_service/__init__.py \
+ && pip install --no-cache-dir ".[cpu]"
+
+# lang= harus sama dengan Settings.lang (tests/test_dockerfile.py menjaga ini). Semua model opsional
+# (doc orientation, UVDoc unwarping, textline orientation) ikut di-fetch walau default service
+# mematikan dua yang pertama, agar menyalakannya lewat env tidak memicu download di dalam request.
+RUN python -c "from paddleocr import PaddleOCR; PaddleOCR(lang='en', enable_mkldnn=False, device='cpu', use_doc_orientation_classify=True, use_doc_unwarping=True, use_textline_orientation=True)"
+
+
+# =============================================================================
+# Stage 2 -- service.
+# =============================================================================
+FROM ${CUDA_IMAGE} AS ocr
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    # Eksplisit dan load-bearing: PaddleOCR menyimpan cache bobot di $HOME/.paddlex. Warm-up di atas
+    # mengisinya saat BUILD, dan hanya cache hit saat runtime bila HOME menunjuk tempat yang sama.
+    HOME=/root \
+    PATH=/opt/venv/bin:$PATH
+
+# libgomp1 = runtime OpenMP paddle. libgl1/libglib2.0-0t64 karena paddlex menarik opencv.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 \
+        python3-venv \
+        libgl1 \
+        libglib2.0-0t64 \
+        libgomp1 \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python3 -m venv /opt/venv && pip install --no-cache-dir --upgrade pip
+
+WORKDIR /srv/ocr
+
+# Dependensi dulu (layer cache), dengan paket stub; kode asli di-copy belakangan.
+COPY pyproject.toml ./
+RUN mkdir -p src/ocr_service && touch src/ocr_service/__init__.py \
+ && pip install --no-cache-dir ".[gpu]" \
+ && pip uninstall -y ocr-service \
+ && rm -rf src build
+
+# DUA pip run, bukan satu: --index-url di requirements-gpu.txt berlaku global untuk satu run, sehingga
+# gabungan install akan mencari fastapi dkk. di index Paddle dan gagal.
+COPY requirements-gpu.txt ./
+RUN pip install --no-cache-dir -r requirements-gpu.txt
+
+# ~177MB bobot model dari stage 1. Tanpa ini download terjadi DI DALAM startup pod setiap deploy (dan
+# gagal di host tanpa rute keluar). Sebelum kode agar layer ini bertahan di setiap perubahan kode.
+COPY --from=ocr-models /root/.paddlex /root/.paddlex
+
+COPY src ./src
+RUN pip install --no-cache-dir --no-deps . && rm -rf build src/*.egg-info
+
+ARG GIT_SHA=unknown
+ARG BUILD_TIME=unknown
+ENV BUILD_SHA=${GIT_SHA} \
+    BUILD_TIME=${BUILD_TIME}
+
+EXPOSE 8002
+
+# /healthz = proses hidup (tidak membangun pool). /readyz = semua engine siap; field `device`
+# memperlihatkan fallback CPU diam-diam bila container jalan tanpa --gpus.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=3 \
+    CMD python3 -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8002/healthz', timeout=8).status == 200 else 1)"
+
+# 0.0.0.0: dipanggil dari pod lain (ClusterIP). Satu worker: konkurensi ada di pool DI DALAM proses
+# (engine berbagi satu CUDA context); worker kedua membayar CUDA context sendiri (~300-500MB).
+# Skala dengan OCR_ENGINE_POOL_SIZE, bukan --workers.
+CMD ["uvicorn", "ocr_service.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8002", "--workers", "1"]

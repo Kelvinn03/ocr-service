@@ -1,0 +1,16 @@
+{
+  "description": "Bagian `metadata` dari request.",
+  "properties": {
+    "request_id": {
+      "description": "ID penelusuran dari pemanggil, di-echo di respons. Tidak boleh memuat data pribadi.",
+      "pattern": "^[A-Za-z0-9._:\\-]{1,200}$",
+      "title": "Request Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "request_id"
+  ],
+  "title": "OcrMetadata",
+  "type": "object"
+}

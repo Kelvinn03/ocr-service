@@ -1,0 +1,7 @@
+# Backend paddle untuk target CUDA (diverifikasi di A10: driver 580.126.09 / CUDA 13.0).
+# Pasang di pip run TERSENDIRI: --index-url berlaku global untuk satu run pip, sehingga
+# digabung dengan dependensi lain pip akan mencari fastapi dkk. di index Paddle dan gagal.
+#
+#   pip install ".[gpu]" && pip install -r requirements-gpu.txt
+--index-url https://www.paddlepaddle.org.cn/packages/stable/cu130/
+paddlepaddle-gpu==3.3.1
