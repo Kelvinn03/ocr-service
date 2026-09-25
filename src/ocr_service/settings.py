@@ -32,13 +32,12 @@ class Settings(BaseSettings):
     # oneDNN gagal di paddlepaddle 3.3.1 / paddleocr 3.7.0 untuk semua halaman (diukur 2026-09-22 di
     # existing). No-op di GPU; di CPU harus tetap False.
     enable_mkldnn: bool = False
-    # Dipasang EKSPLISIT, tidak mengikuti default PaddleOCR (item 24). Doc orientation & unwarping
-    # mengubah gambar sebelum deteksi, sehingga bbox mengacu ke gambar hasil pra-proses, bukan PNG
-    # yang dikirim. Default False agar bbox = piksel PNG yang dikirim. Perlu diverifikasi di sampel asli.
-    use_doc_orientation_classify: bool = False
-    use_doc_unwarping: bool = False
-    # Orientasi per baris (0/180) hanya memengaruhi pengenalan teks, tidak menggeser bbox.
-    use_textline_orientation: bool = True
+    # None = tidak dikirim ke PaddleOCR → default PaddleOCR 3.x, SAMA dengan existing (existing tidak
+    # memasang flag ini). Catatan item 24: bila doc orientation / unwarping aktif (default), bbox
+    # mengacu ke gambar hasil pra-proses, bukan PNG yang dikirim — traceback scan bisa sedikit bergeser.
+    use_doc_orientation_classify: bool | None = None
+    use_doc_unwarping: bool | None = None
+    use_textline_orientation: bool | None = None
 
     log_level: str = "INFO"
 

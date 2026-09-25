@@ -101,14 +101,8 @@ spec:
             # menunggu tanpa batas (sampai timeout client 300s). Tuning: item 24.
             - name: OCR_ACQUIRE_TIMEOUT_S
               value: "30"
-            # Eksplisit (item 24): mati agar bbox mengacu ke PNG yang dikirim. Existing kemungkinan
-            # menyala (default PaddleOCR). Verifikasi di sampel asli sebelum mengubah.
-            - name: OCR_USE_DOC_ORIENTATION_CLASSIFY
-              value: "false"
-            - name: OCR_USE_DOC_UNWARPING
-              value: "false"
-            - name: OCR_USE_TEXTLINE_ORIENTATION
-              value: "true"
+            # OCR_USE_DOC_ORIENTATION_CLASSIFY / OCR_USE_DOC_UNWARPING / OCR_USE_TEXTLINE_ORIENTATION
+            # sengaja tidak di-set: default PaddleOCR, sama dengan existing (item 24).
 
           resources:
             limits:

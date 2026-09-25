@@ -100,9 +100,9 @@ dijalankan berdampingan selama migrasi pemanggil.
 | `OCR_MAX_IMAGE_PIXELS` | `50000000` | A4 250 DPI ≈ 6 MP |
 | `OCR_LANG` | `en` | harus sama dengan warm-up di Dockerfile |
 | `OCR_ENABLE_MKLDNN` | `false` | oneDNN gagal di paddle 3.3.1; biarkan false |
-| `OCR_USE_DOC_ORIENTATION_CLASSIFY` | `false` | lihat "Perubahan dari existing" |
-| `OCR_USE_DOC_UNWARPING` | `false` | lihat "Perubahan dari existing" |
-| `OCR_USE_TEXTLINE_ORIENTATION` | `true` | orientasi per baris; tidak menggeser bbox |
+| `OCR_USE_DOC_ORIENTATION_CLASSIFY` | tidak di-set | kosong = default PaddleOCR (sama dengan existing) |
+| `OCR_USE_DOC_UNWARPING` | tidak di-set | kosong = default PaddleOCR (sama dengan existing) |
+| `OCR_USE_TEXTLINE_ORIENTATION` | tidak di-set | kosong = default PaddleOCR (sama dengan existing) |
 | `OCR_LOG_LEVEL` | `INFO` | |
 
 ## Perubahan dari server OCR existing (`ocr/service.py`)
@@ -117,14 +117,11 @@ dijalankan berdampingan selama migrasi pemanggil.
 - Pool dibangun saat startup (thread latar), bukan pada request pertama; `/readyz` baru.
 - Fallback API PaddleOCR 2.x dihapus (versi dipin `paddleocr==3.7.0`); print diagnostik
   `[ocr-pool]` dihapus.
-- **Flag pra-proses PaddleOCR dipasang eksplisit (item 24).** Existing tidak memasang apa pun,
-  sehingga berjalan dengan default PaddleOCR 3.x — kemungkinan besar doc orientation classify dan
-  UVDoc unwarping **menyala** (image existing membawa kedua modelnya). Bila begitu, `bbox` existing
-  mengacu ke gambar hasil rotasi/unwarp, bukan PNG yang dikirim. Di sini default-nya **dimatikan**
-  agar `bbox` = piksel PNG yang dikirim. Ini perubahan perilaku yang **harus diverifikasi di sampel
-  asli** (akurasi pada scan miring/terbalik/melengkung bisa turun). Bila orientasi dinyalakan
-  kembali, `rotation_applied` melaporkan sudutnya dan `bbox` berada di frame gambar yang sudah
-  diputar (pemanggil harus memetakan balik); unwarping membuat `bbox` tidak dapat dipetakan balik.
+- **Flag pra-proses PaddleOCR mengikuti existing (item 24).** Existing tidak memasang flag
+  orientasi/unwarping, sehingga memakai default PaddleOCR 3.x; di sini juga tidak dipasang kecuali
+  env di-set. Konsekuensi yang dicatat: bila doc orientation/unwarping aktif, `bbox` mengacu ke gambar
+  hasil pra-proses, bukan PNG yang dikirim, sehingga highlight traceback scan bisa bergeser. Perlu dicek
+  di sampel asli sebelum diputuskan berbeda dari existing.
 
 ## Menjalankan
 
@@ -175,8 +172,8 @@ Folder ini tidak bergantung pada apa pun di luar dirinya, jadi cukup dipindah:
 
 ## Yang harus diverifikasi di cluster GPU
 
-- Flag orientasi/unwarping mati vs default existing: bandingkan teks dan `bbox` pada sampel asli
-  (termasuk scan miring/terbalik) sebelum produksi (item 24). Pastikan juga `doc_preprocessor_res.angle`
+- Dengan flag pra-proses default (sama dengan existing): cek apakah `bbox` masih sejalan dengan PNG
+  yang dikirim pada scan miring/terbalik/melengkung (item 24). Pastikan juga `doc_preprocessor_res.angle`
   benar-benar yang dilaporkan PaddleOCR 3.7.0 saat orientasi dinyalakan.
 - VRAM pool 6 (~16 GiB dari 23 GiB, estimasi; item 11/21) dan memory host (limit 8Gi = estimasi).
 - `OCR_ACQUIRE_TIMEOUT_S` vs `OCR_PAGE_CONCURRENCY` M2 dan timeout client M2 (item 23/24).

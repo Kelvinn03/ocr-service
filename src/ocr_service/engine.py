@@ -149,19 +149,18 @@ class PaddleEngine:
         self.version: str = str(getattr(paddleocr, "__version__", "unknown"))
         self._settings = settings
         # lang="en" cukup untuk dokumen Latin (KTP, PKKPR, ...). Tinjau ulang bila ada salah baca
-        # sistematis pada karakter khas Indonesia. Flag orientasi/unwarping eksplisit (item 24).
-        self._ocr = PaddleOCR(
-            lang=settings.lang,
-            device=device,
-            enable_mkldnn=settings.enable_mkldnn,
-            use_doc_orientation_classify=settings.use_doc_orientation_classify,
-            use_doc_unwarping=settings.use_doc_unwarping,
-            use_textline_orientation=settings.use_textline_orientation,
-        )
+        # sistematis pada karakter khas Indonesia. Flag pra-proses hanya dikirim bila di-set; tanpa itu
+        # PaddleOCR memakai default-nya, sama seperti existing (item 24).
+        flags = {
+            name: value
+            for name in ("use_doc_orientation_classify", "use_doc_unwarping", "use_textline_orientation")
+            if (value := getattr(settings, name)) is not None
+        }
+        self._ocr = PaddleOCR(lang=settings.lang, device=device, enable_mkldnn=settings.enable_mkldnn, **flags)
 
     def predict(self, image: Image.Image) -> EngineResult:
         result = parse_predict_result(self._ocr.predict(np.asarray(image.convert("RGB"))))
-        if not self._settings.use_doc_orientation_classify:
+        if self._settings.use_doc_orientation_classify is False:
             result.rotation_applied = 0
         return result
 
