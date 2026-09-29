@@ -144,7 +144,11 @@ curl -s -F image=@halaman.png -F 'metadata={"request_id":"dev:page-1"};type=appl
 Tanpa paddle terpasang service tetap start, tetapi `/healthz` dan `/readyz` menjawab 503
 (`pool_state: failed`).
 
-Image GPU (context build = root repo; jalan sebagai uid 10001, cache model di `/home/ocr/.paddlex`):
+Image GPU (context build = root repo; jalan sebagai uid 10001, cache model di `/home/ocr/.paddlex`).
+`/opt/venv` dipasang di stage `ocr-venv` lalu di-COPY dalam 12 layer ≤ ~1 GiB (`docker/split_layers.py`):
+satu layer ±3,7 GiB hasil install paddle GPU gagal di-push ke Harbor (500). Bila `split_layers` gagal
+karena bucket tidak cukup, naikkan jumlahnya di baris `RUN` DAN tambah baris `COPY --from=ocr-venv`
+(dijaga `tests/test_split_layers.py`).
 
 ```bash
 docker build --build-arg GIT_SHA=$(git rev-parse --short HEAD) -t ocr-service .
