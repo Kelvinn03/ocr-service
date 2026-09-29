@@ -13,8 +13,9 @@ Prinsip (guide `arsi_new.md`, "Stage OCR"):
 - **Engine dikunci ke PaddleOCR** (item 15). DeepSeek/LightOn/Unlimited/Ollama dari repo existing
   tidak dibawa.
 
-Folder ini sementara tinggal di repo backend M2, tetapi berdiri sendiri: dependensi, image,
-manifest, test, dan job CI sendiri, tanpa import dari `app/` (dijaga `tests/test_isolation.py`).
+Repo sendiri, dipisah dari repo backend M2 (`verification-backend`) dengan riwayat foldernya. Tidak
+meng-import kode M2 (dijaga `tests/test_isolation.py`); M2 hanya bergantung pada kontrak di
+`contract/`, yang disalin (vendor) di repo backend.
 
 ## Kontrak `POST /v1/ocr`
 
@@ -128,7 +129,6 @@ dijalankan berdampingan selama migrasi pemanggil.
 Lokal (tanpa GPU; macOS tidak punya wheel paddle GPU):
 
 ```bash
-cd ocr-service
 /opt/homebrew/bin/python3.12 -m venv .venv
 .venv/bin/pip install -e ".[dev]"            # tanpa paddle: cukup untuk test (FakeEngine)
 .venv/bin/ruff check . && .venv/bin/pytest -q
@@ -144,31 +144,30 @@ curl -s -F image=@halaman.png -F 'metadata={"request_id":"dev:page-1"};type=appl
 Tanpa paddle terpasang service tetap start, tetapi `/healthz` dan `/readyz` menjawab 503
 (`pool_state: failed`).
 
-Image GPU (context build = folder ini):
+Image GPU (context build = root repo; jalan sebagai uid 10001, cache model di `/home/ocr/.paddlex`):
 
 ```bash
-docker build --build-arg GIT_SHA=$(git rev-parse --short HEAD) -t ocr-service ocr-service/
+docker build --build-arg GIT_SHA=$(git rev-parse --short HEAD) -t ocr-service .
 docker run --gpus all -p 8002:8002 ocr-service
 ```
 
-Kubernetes: `k8s/ocr.yaml` (1 replika, `Recreate`, 1 GPU A10, pool 6, ClusterIP tanpa auth).
-Baca komentar di manifest sebelum apply — khususnya pengecekan GPU dan memory limit yang masih
-estimasi.
+## Deploy
 
-## Cara memindahkan ke repo sendiri
+| Target | Workflow | Isi |
+|---|---|---|
+| Dev instance (docker compose milik repo backend, `~/m2`) | `deploy-dev.yml` | `ci` hijau di main → image ke GHCR (`:latest`, `:<sha>`) → SSH, tulis `OCR_IMAGE`/`OCR_TAG` ke `~/m2/.deploy-tags` → restart service `ocr` saja |
+| Cluster AI (GitOps) | `build-push.yml` | `ci` hijau di main → image ke Harbor (`<HARBOR_HOST>/apps/ocr-service:<sha7>`) → ganti `newTag` di bkpm-gitops `apps/ai/ocr-service/` → ArgoCD sync |
 
-Folder ini tidak bergantung pada apa pun di luar dirinya, jadi cukup dipindah:
+Manifest Kubernetes **tidak** ada di repo ini, tetapi di repo bkpm-gitops (`apps/ai/ocr-service/`:
+1 replika, `Recreate`, 1 GPU A10, pool 6, ClusterIP tanpa auth). Baca komentar di manifest itu
+sebelum sync pertama, khususnya pengecekan GPU dan memory limit yang masih estimasi.
 
-1. Buat repo baru dengan riwayat folder ini:
-   `git subtree split -P ocr-service -b ocr-service-split`, lalu push branch itu ke repo baru
-   (atau cukup salin isi folder bila riwayat tidak diperlukan).
-2. Di repo baru: pindahkan job `ocr-service` dari `.github/workflows/ci.yml` backend menjadi workflow
-   sendiri (hapus `working-directory`), tambahkan build & push image (tag semver + sha).
-3. Di repo backend: hapus folder `ocr-service/`, job CI `ocr-service`, dan baris `ocr-service/` di
-   `.dockerignore`. `tests/contract/test_ocr_contract_compat.py` otomatis skip; gantinya salin
-   (vendor) `contract/` versi yang dipin ke `tests/contract/fixtures/ocr/<versi>/` dan arahkan test itu
-   ke sana, agar kedua sisi tetap tidak bergeser.
-4. Putuskan pemilik repo (item 14) dan registry image; ganti `CHANGE-ME` di `k8s/ocr.yaml`.
+Secrets repo: `SSH_HOST`, `SSH_USERNAME`, `SSH_PRIVATE_KEY` (dev instance, sama dengan repo backend),
+`HARBOR_USERNAME`, `HARBOR_PASSWORD`, `GITOPS_TOKEN` (dari admin platform). Variables: `HARBOR_HOST`,
+`TARGET_CLUSTER=ai`.
+
+Kontrak berubah → jalankan `export_contract`, rilis, lalu salin `contract/` ke repo backend
+(`tests/fixtures/ocr_contract/`) agar test kompatibilitas client M2 ikut diperbarui.
 
 ## Yang harus diverifikasi di cluster GPU
 
@@ -178,5 +177,5 @@ Folder ini tidak bergantung pada apa pun di luar dirinya, jadi cukup dipindah:
 - VRAM pool 6 (~16 GiB dari 23 GiB, estimasi; item 11/21) dan memory host (limit 8Gi = estimasi).
 - `OCR_ACQUIRE_TIMEOUT_S` vs `OCR_PAGE_CONCURRENCY` M2 dan timeout client M2 (item 23/24).
 - `engine_version` terbaca `3.7.0` dari image.
-- Image jalan sebagai root (sama dengan existing, cache model di `/root/.paddlex`); pertimbangkan
-  user non-root setelah dicek PaddleX tidak menulis ke cache saat runtime.
+- Image kini jalan sebagai **non-root** (uid 10001, `HOME=/home/ocr`; existing: root). Cek di run
+  pertama bahwa `/readyz` siap tanpa download model (cache terbaca dari `/home/ocr/.paddlex`).

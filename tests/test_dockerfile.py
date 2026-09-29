@@ -24,10 +24,18 @@ def test_warmup_fetches_every_optional_model():
         assert f"{flag}=True" in warmup, flag
 
 
-def test_home_is_pinned_and_cache_copied_to_same_path():
-    assert re.search(r"^\s*HOME=/root", DOCKERFILE, re.MULTILINE)
+def test_home_is_pinned_and_cache_copied_to_runtime_home():
+    # Warm-up (stage 1) menulis ke /root/.paddlex; runtime (stage 2) HOME=/home/ocr.
+    runtime = DOCKERFILE.split("AS ocr\n", 1)[1]
+    assert re.search(r"^\s*HOME=/home/ocr", runtime, re.MULTILINE)
     copies = [ln for ln in DOCKERFILE.splitlines() if ln.strip().startswith("COPY") and "--from=ocr-models" in ln]
-    assert copies and copies[0].split()[-2:] == ["/root/.paddlex", "/root/.paddlex"]
+    assert copies and copies[0].split()[-2:] == ["/root/.paddlex", "/home/ocr/.paddlex"]
+    assert "--chown=10001:10001" in copies[0]
+
+
+def test_runs_as_non_root():
+    users = re.findall(r"^USER\s+(\S+)", DOCKERFILE, re.MULTILINE)
+    assert users and users[-1].split(":")[0] not in ("0", "root")
 
 
 def test_single_uvicorn_worker():

@@ -1,0 +1,81 @@
+name: build-push
+
+# Cluster AI (GitOps, "Panduan Deploy Aplikasi dengan ArgoCD"): `ci` hijau di main -> build image ->
+# push ke Harbor dengan tag sha 7 karakter -> ganti `newTag` di bkpm-gitops apps/<cluster>/<repo>/ ->
+# ArgoCD menyinkronkan. Tidak ada kubectl di sini. Rollback = `git revert` commit tag di bkpm-gitops.
+#
+# Secrets: HARBOR_USERNAME, HARBOR_PASSWORD, GITOPS_TOKEN. Variables: HARBOR_HOST, TARGET_CLUSTER (ai).
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: build-push-${{ github.repository }}
+  cancel-in-progress: false
+
+env:
+  HARBOR_HOST: ${{ vars.HARBOR_HOST }}
+  HARBOR_PROJECT: apps
+  APP_NAME: ${{ github.event.repository.name }}
+  TARGET_CLUSTER: ${{ vars.TARGET_CLUSTER }}
+
+jobs:
+  build-push-deploy:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repo aplikasi
+        uses: actions/checkout@v4
+        with:
+          # workflow_run berjalan di konteks default branch; bangun persis commit yang lulus ci.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Tentukan tag image
+        run: echo "IMAGE_TAG=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_ENV"
+
+      # Base CUDA + paddlepaddle-gpu + bobot model melebihi ~14GB disk runner.
+      - name: free disk space
+        run: sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
+
+      # Harbor belum TLS; tanpa ini docker login gagal "server gave HTTP response to HTTPS client".
+      - name: Izinkan Harbor HTTP (insecure registry)
+        run: |
+          echo "{\"insecure-registries\": [\"${HARBOR_HOST}\"]}" | sudo tee /etc/docker/daemon.json
+          sudo systemctl restart docker
+
+      # Username robot mengandung `$`: lewat env, bukan ditulis di perintah.
+      - name: Login ke Harbor
+        env:
+          HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
+          HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
+        run: echo "$HARBOR_PASSWORD" | docker login "$HARBOR_HOST" -u "$HARBOR_USERNAME" --password-stdin
+
+      - name: Build dan push image
+        run: |
+          IMAGE="${HARBOR_HOST}/${HARBOR_PROJECT}/${APP_NAME}"
+          docker build --build-arg GIT_SHA="$IMAGE_TAG" --build-arg BUILD_TIME="${{ github.run_started_at }}" \
+            -t "${IMAGE}:${IMAGE_TAG}" .
+          docker push "${IMAGE}:${IMAGE_TAG}"
+
+      - name: Checkout bkpm-gitops
+        uses: actions/checkout@v4
+        with:
+          repository: ryu-cc3/bkpm-gitops
+          token: ${{ secrets.GITOPS_TOKEN }}
+          path: gitops
+
+      - name: Update tag image di bkpm-gitops
+        run: |
+          cd "gitops/apps/${TARGET_CLUSTER}/${APP_NAME}"
+          sed -i "s|newTag: .*|newTag: \"${IMAGE_TAG}\"|" kustomization.yaml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add kustomization.yaml
+          git commit -m "ci(${APP_NAME}): image ${IMAGE_TAG}" || { echo "Tag tidak berubah"; exit 0; }
+          git pull --rebase
+          git push

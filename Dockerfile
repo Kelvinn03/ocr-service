@@ -54,8 +54,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     # Eksplisit dan load-bearing: PaddleOCR menyimpan cache bobot di $HOME/.paddlex. Warm-up di atas
-    # mengisinya saat BUILD, dan hanya cache hit saat runtime bila HOME menunjuk tempat yang sama.
-    HOME=/root \
+    # mengisinya saat BUILD (di /root), lalu di-copy ke HOME user runtime; cache hit hanya bila HOME
+    # menunjuk tempat cache itu.
+    HOME=/home/ocr \
     PATH=/opt/venv/bin:$PATH
 
 # libgomp1 = runtime OpenMP paddle. libgl1/libglib2.0-0t64 karena paddlex menarik opencv.
@@ -69,6 +70,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python3 -m venv /opt/venv && pip install --no-cache-dir --upgrade pip
+
+# User non-root (panduan deploy cluster). uid 10001 sama dengan image backend M2.
+RUN groupadd --system --gid 10001 ocr \
+ && useradd --system --uid 10001 --gid ocr --home-dir /home/ocr --create-home --shell /usr/sbin/nologin ocr
 
 WORKDIR /srv/ocr
 
@@ -86,7 +91,8 @@ RUN pip install --no-cache-dir -r requirements-gpu.txt
 
 # ~177MB bobot model dari stage 1. Tanpa ini download terjadi DI DALAM startup pod setiap deploy (dan
 # gagal di host tanpa rute keluar). Sebelum kode agar layer ini bertahan di setiap perubahan kode.
-COPY --from=ocr-models /root/.paddlex /root/.paddlex
+# --chown: PaddleX boleh menulis ke cache-nya sendiri saat runtime (mis. file lock/metadata).
+COPY --from=ocr-models --chown=10001:10001 /root/.paddlex /home/ocr/.paddlex
 
 COPY src ./src
 RUN pip install --no-cache-dir --no-deps . && rm -rf build src/*.egg-info
@@ -106,4 +112,6 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=3 \
 # 0.0.0.0: dipanggil dari pod lain (ClusterIP). Satu worker: konkurensi ada di pool DI DALAM proses
 # (engine berbagi satu CUDA context); worker kedua membayar CUDA context sendiri (~300-500MB).
 # Skala dengan OCR_ENGINE_POOL_SIZE, bukan --workers.
+USER 10001:10001
+
 CMD ["uvicorn", "ocr_service.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8002", "--workers", "1"]

@@ -1,0 +1,114 @@
+name: deploy-dev
+
+# Dev instance (docker compose milik repo backend M2 di ~/m2). Cluster AI memakai build-push.yml.
+#
+# Rantai: `ci` hijau di main -> build image ke GHCR (:latest, :<sha>) -> SSH ke instance -> tulis
+# OCR_IMAGE/OCR_TAG ke ~/m2/.deploy-tags -> restart service `ocr` saja. Rollback: ubah OCR_TAG di
+# .deploy-tags ke sha hijau sebelumnya lalu `docker compose --env-file .env --env-file .deploy-tags up -d --no-deps ocr`.
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build & push image
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      sha: ${{ steps.meta.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      # GHCR menolak path huruf besar; github.repository mempertahankan kapitalisasi owner.
+      - id: meta
+        run: |
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # Base CUDA + paddlepaddle-gpu + bobot model melebihi ~14GB disk runner.
+      - name: free disk space
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
+          df -h / | tail -1
+
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}:latest
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.sha }}
+          build-args: |
+            GIT_SHA=${{ steps.meta.outputs.sha }}
+            BUILD_TIME=${{ github.run_started_at }}
+          cache-from: type=registry,ref=${{ steps.meta.outputs.image }}:buildcache
+          cache-to: type=registry,ref=${{ steps.meta.outputs.image }}:buildcache,mode=max
+
+  deploy:
+    name: deploy ke dev instance
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: appleboy/ssh-action@v1
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OCR_IMAGE: ${{ needs.build.outputs.image }}
+          OCR_TAG: ${{ needs.build.outputs.sha }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          envs: GHCR_USER,GHCR_TOKEN,OCR_IMAGE,OCR_TAG
+          command_timeout: 30m
+          script: |
+            set -e
+            cd ~/m2
+            # docker-compose.yml disalin oleh deploy-dev repo backend.
+            test -f docker-compose.yml || { echo "::error::~/m2/docker-compose.yml belum ada. Jalankan deploy-dev repo backend dulu."; exit 1; }
+            # Disimpan agar `docker compose up` berikutnya (mis. deploy backend) tidak kembali ke image lama.
+            touch .deploy-tags
+            grep -Ev '^(OCR_IMAGE|OCR_TAG)=' .deploy-tags > .deploy-tags.tmp || true
+            printf 'OCR_IMAGE=%s\nOCR_TAG=%s\n' "$OCR_IMAGE" "$OCR_TAG" >> .deploy-tags.tmp && mv .deploy-tags.tmp .deploy-tags
+            dc() { docker compose --env-file .env --env-file .deploy-tags "$@"; }
+
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+            dc pull ocr
+            dc up -d --no-deps ocr
+            docker image prune -f
+            docker logout ghcr.io
+
+            # HEALTHCHECK image = /healthz; membangun pool engine GPU bisa beberapa menit.
+            for i in $(seq 1 40); do
+              if [ "$(docker inspect -f '{{.State.Health.Status}}' "$(dc ps -q ocr)")" = healthy ]; then
+                echo "ocr sehat setelah ~$((i * 10))s"; exit 0
+              fi
+              sleep 10
+            done
+            echo "ocr belum sehat setelah ~7 menit"
+            dc logs --tail 80 ocr
+            exit 1

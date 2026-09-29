@@ -9,5 +9,4 @@ build/
 .env
 tests/
 contract/
-k8s/
 *.md
