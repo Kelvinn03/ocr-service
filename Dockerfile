@@ -129,6 +129,7 @@ COPY --from=ocr-venv /split/11/ /
 # --chown: PaddleX boleh menulis ke cache-nya sendiri saat runtime (mis. file lock/metadata).
 COPY --from=ocr-models --chown=10001:10001 /root/.paddlex /home/ocr/.paddlex
 
+COPY pyproject.toml ./
 COPY src ./src
 RUN pip install --no-cache-dir --no-deps . && rm -rf build src/*.egg-info
 

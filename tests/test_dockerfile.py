@@ -40,3 +40,12 @@ def test_runs_as_non_root():
 
 def test_single_uvicorn_worker():
     assert '"--workers", "1"' in DOCKERFILE
+
+
+def test_service_stage_copies_the_project_before_installing_it():
+    # Stage service memasang paket ocr-service sendiri (`pip install .`): pyproject.toml harus di-copy
+    # di stage ITU, bukan hanya di stage ocr-venv.
+    service = DOCKERFILE.split("AS ocr\n", 1)[1]
+    install = service.index("pip install --no-cache-dir --no-deps .")
+    assert service.rfind("COPY pyproject.toml ./", 0, install) != -1
+    assert service.rfind("COPY src ./src", 0, install) != -1
