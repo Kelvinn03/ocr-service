@@ -6,7 +6,7 @@
 #   docker build --build-arg GIT_SHA=$(git rev-parse --short HEAD) -t ocr-service .
 #   docker run --gpus all -p 8002:8002 ocr-service
 #
-# Beda dari existing: hanya pyproject.toml + src/ yang di-copy (existing `COPY . .` membawa seluruh
+# Beda dari existing: hanya pyproject.toml, requirements-gpu.txt, docker/ dan src/ yang di-copy (existing `COPY . .` membawa seluruh
 # repo karena config.py dan contract test satu pohon); image ini tidak butuh itu lagi.
 
 # Harus cocok dengan driver NVIDIA host DAN index CUDA di requirements-gpu.txt (cu130). Varian cudnn
@@ -46,7 +46,42 @@ RUN python -c "from paddleocr import PaddleOCR; PaddleOCR(lang='en', enable_mkld
 
 
 # =============================================================================
-# Stage 2 -- service.
+# Stage 2 -- venv lengkap (paddle GPU + dependensi nvidia-*), lalu dipecah per ~1 GiB.
+#
+# Dipasang di stage terpisah dan di-COPY ke stage service dalam beberapa bagian (docker/split_layers.py)
+# karena satu layer ±3,7 GiB gagal di-push ke Harbor (500), sedangkan layer <=1,4 GiB lolos. Isi
+# /opt/venv di image akhir sama dengan install biasa.
+# =============================================================================
+FROM ${CUDA_IMAGE} AS ocr-venv
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PATH=/opt/venv/bin:$PATH
+
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python3 -m venv /opt/venv && pip install --no-cache-dir --upgrade pip
+
+WORKDIR /build
+
+# Dependensi dengan paket stub; kode asli dipasang di stage service.
+COPY pyproject.toml ./
+RUN mkdir -p src/ocr_service && touch src/ocr_service/__init__.py \
+ && pip install --no-cache-dir ".[gpu]" \
+ && pip uninstall -y ocr-service
+
+# DUA pip run, bukan satu: --index-url di requirements-gpu.txt berlaku global untuk satu run, sehingga
+# gabungan install akan mencari fastapi dkk. di index Paddle dan gagal.
+COPY requirements-gpu.txt ./
+RUN pip install --no-cache-dir -r requirements-gpu.txt
+
+# Jumlah bucket harus sama dengan jumlah baris `COPY --from=ocr-venv` di bawah (dijaga tests/test_dockerfile.py).
+COPY docker/split_layers.py ./
+RUN python3 split_layers.py /opt/venv /split 12 1024
+
+
+# =============================================================================
+# Stage 3 -- service.
 # =============================================================================
 FROM ${CUDA_IMAGE} AS ocr
 
@@ -69,27 +104,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-RUN python3 -m venv /opt/venv && pip install --no-cache-dir --upgrade pip
-
 # User non-root (panduan deploy cluster). uid 10001 sama dengan image backend M2.
 RUN groupadd --system --gid 10001 ocr \
  && useradd --system --uid 10001 --gid ocr --home-dir /home/ocr --create-home --shell /usr/sbin/nologin ocr
 
 WORKDIR /srv/ocr
 
-# Dependensi dulu (layer cache), dengan paket stub; kode asli di-copy belakangan.
-COPY pyproject.toml ./
-RUN mkdir -p src/ocr_service && touch src/ocr_service/__init__.py \
- && pip install --no-cache-dir ".[gpu]" \
- && pip uninstall -y ocr-service \
- && rm -rf src build
+# /opt/venv dari stage ocr-venv, satu layer per bucket (masing-masing <= ~1 GiB belum terkompresi).
+COPY --from=ocr-venv /split/0/ /
+COPY --from=ocr-venv /split/1/ /
+COPY --from=ocr-venv /split/2/ /
+COPY --from=ocr-venv /split/3/ /
+COPY --from=ocr-venv /split/4/ /
+COPY --from=ocr-venv /split/5/ /
+COPY --from=ocr-venv /split/6/ /
+COPY --from=ocr-venv /split/7/ /
+COPY --from=ocr-venv /split/8/ /
+COPY --from=ocr-venv /split/9/ /
+COPY --from=ocr-venv /split/10/ /
+COPY --from=ocr-venv /split/11/ /
 
-# DUA pip run, bukan satu: --index-url di requirements-gpu.txt berlaku global untuk satu run, sehingga
-# gabungan install akan mencari fastapi dkk. di index Paddle dan gagal.
-COPY requirements-gpu.txt ./
-RUN pip install --no-cache-dir -r requirements-gpu.txt
-
-# ~177MB bobot model dari stage 1. Tanpa ini download terjadi DI DALAM startup pod setiap deploy (dan
+# ~177MB bobot model dari stage 1 (ocr-models). Tanpa ini download terjadi DI DALAM startup pod setiap deploy (dan
 # gagal di host tanpa rute keluar). Sebelum kode agar layer ini bertahan di setiap perubahan kode.
 # --chown: PaddleX boleh menulis ke cache-nya sendiri saat runtime (mis. file lock/metadata).
 COPY --from=ocr-models --chown=10001:10001 /root/.paddlex /home/ocr/.paddlex
